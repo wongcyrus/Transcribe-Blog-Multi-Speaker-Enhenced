@@ -1,13 +1,5 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Description: CF Template for multi_speaker_audio file(WAV) Processing Implementation.
-Parameters:
-  EnvName:
-    Type: String
-    Description: Name of an environment. 'dev', 'staging', 'prod' and any name.
-    Default: prod
-    AllowedPattern: ^.*[^0-9]$
-    ConstraintDescription: Must end with non numberic character.
-
 Resources:
   AudioRawBucket:
     Type: 'AWS::S3::Bucket'
@@ -33,36 +25,33 @@ Resources:
                     - 'logs:CreateLogGroup'
                     - 'logs:CreateLogStream'
                     - 'logs:PutLogEvents'
-
             Resource: 'arn:aws:logs:*:*:*'
-
           - Effect: Allow
             Action:
                     - 's3:PutObject'
                     - 's3:GetObject'
                     - 's3:List*'
                     - 's3:GetBucketLocation'
-            Resource: [!GetAtt AudioRawBucket.Arn, !GetAtt AudioPrcsdBucket.Arn, !Join ['',[!GetAtt AudioRawBucket.Arn,"/*"]], !Join ['',[!GetAtt AudioPrcsdBucket.Arn,"/*"]]]
-
+            Resource: 
+              - !GetAtt AudioRawBucket.Arn
+              - !GetAtt AudioPrcsdBucket.Arn
+              - !Join ['',[!GetAtt AudioRawBucket.Arn,"/*"]]
+              - !Join ['',[!GetAtt AudioPrcsdBucket.Arn,"/*"]]
           - Effect: Allow
             Action:
                     - 'SQS:SendMessage'
                     - 'SQS:ReceiveMessage'
                     - 'SQS:DeleteMessage'
-
             Resource: !GetAtt TaskAudioQueue.Arn
-
           - Effect: Allow
             Action:
                     -  'glue:GetTable'
                     -  'glue:GetTables'
                     -  'glue:GetDatabase'
                     -  'glue:CreateTable'
-
             Resource: [ !Sub 'arn:aws:glue:${AWS::Region}:${AWS::AccountId}:database/default',
                        !Sub 'arn:aws:glue:${AWS::Region}:${AWS::AccountId}:catalog',
                         !Sub 'arn:aws:glue:${AWS::Region}:${AWS::AccountId}:table/default/transcribe_data']
-
           - Effect: Allow
             Action:
                     -  'athena:GetNamedQuery'
@@ -70,26 +59,58 @@ Resources:
                     -  'athena:GetQueryExecution'
                     -  'athena:GetTable*'
                     -  'athena:List*'
-
             Resource: '*'
-
           - Effect: Allow
             Action:
                     -   'transcribe:StartTranscriptionJob'
                     -   'transcribe:GetTranscriptionJob'
                     -   'transcribe:DeleteTranscriptionJob'
-
             Resource: '*'
           - Effect: Allow
             Action:
                     -   'sns:Publish'
             Resource: !Ref TranscribeCompletionSNSTopic
+          - Effect: Allow
+            Action:
+              - comprehend:DetectDominantLanguage
+              - comprehend:BatchDetectDominantLanguage
+              - comprehend:DetectEntities
+              - comprehend:BatchDetectEntities
+              - comprehend:DetectKeyPhrases
+              - comprehend:BatchDetectKeyPhrases
+              - comprehend:DetectPiiEntities
+              - comprehend:DetectSentiment
+              - comprehend:BatchDetectSentiment
+              - comprehend:DetectSyntax
+              - comprehend:BatchDetectSyntax
+              - comprehend:ClassifyDocument
+              - comprehend:DescribeTopicsDetectionJob
+              - comprehend:ListTopicsDetectionJobs
+              - comprehend:DescribeDominantLanguageDetectionJob
+              - comprehend:ListDominantLanguageDetectionJobs
+              - comprehend:DescribeEntitiesDetectionJob
+              - comprehend:ListEntitiesDetectionJobs
+              - comprehend:DescribeKeyPhrasesDetectionJob
+              - comprehend:ListKeyPhrasesDetectionJobs
+              - comprehend:DescribePiiEntitiesDetectionJob
+              - comprehend:ListPiiEntitiesDetectionJobs
+              - comprehend:DescribeSentimentDetectionJob
+              - comprehend:ListSentimentDetectionJobs
+              - comprehend:DescribeDocumentClassifier
+              - comprehend:ListDocumentClassifiers
+              - comprehend:DescribeDocumentClassificationJob
+              - comprehend:ListDocumentClassificationJobs
+              - comprehend:DescribeEntityRecognizer
+              - comprehend:ListEntityRecognizers
+              - comprehend:ListTagsForResource
+              - comprehend:DescribeEndpoint
+              - comprehend:ListEndpoints
+            Resource: '*'
 
-  LambdaRole1:
+
+  LambdaExecutionRole:
       Type: AWS::IAM::Role
       Properties:
-        RoleName:
-          Fn::Sub: lambda-S3event-execution-role
         AssumeRolePolicyDocument:
           Version: 2012-10-17
           Statement:
@@ -100,33 +121,28 @@ Resources:
               Action:
                 - 'sts:AssumeRole'
         Path: /
-
         ManagedPolicyArns:
-                    - !Ref CreateCustomPolicy
+          - !Ref CreateCustomPolicy
 
 
-  LambdaFunction1:
+  SubmittingTranscribeJobFunction:
     Type: AWS::Lambda::Function
     Properties:
-      FunctionName:
-        Fn::Sub: lambda-function-AudioProc-S3-trigger-${EnvName}
       Description: Intial LambdaFunction for submitting transcribe job.
       Runtime: python3.7
       Code:
         S3Bucket: aws-ml-blog
         S3Key: artifacts/transcribe_audio_processing/Audio_s3_event_transcribe.zip
-
       Handler: lambda_function.lambda_handler
       MemorySize: 542
       Timeout: 900
       Role:
         Fn::GetAtt:
-          - LambdaRole1
+          - LambdaExecutionRole
           - Arn
       Timeout: "900"
       Environment:
         Variables:
-
           PROCSDBUCKET: !Ref AudioPrcsdBucket
           RAWBUCKET: !Ref AudioRawBucket
           AthenaNamedQuery: !Ref AthenaNamedQuery
@@ -142,18 +158,16 @@ Resources:
   LambdaInvokePermission:
     Type: 'AWS::Lambda::Permission'
     Properties:
-      FunctionName: !GetAtt LambdaFunction1.Arn
+      FunctionName: !GetAtt SubmittingTranscribeJobFunction.Arn
       Action: 'lambda:InvokeFunction'
       Principal: s3.amazonaws.com
       SourceAccount: !Ref 'AWS::AccountId'
       SourceArn: !GetAtt AudioRawBucket.Arn
 
 
-  LambdaFunction2:
+  ProcessingTranscribeOutputFunction:
     Type: AWS::Lambda::Function
     Properties:
-      FunctionName:
-        Fn::Sub: lambda-function-Audio-post_prosessing-${EnvName}
       Description: LambdaFunction for processing transcribe output(speech to text).
       Runtime: python3.7
       Code:
@@ -164,12 +178,11 @@ Resources:
       Timeout: 900
       Role:
         Fn::GetAtt:
-          - LambdaRole1
+          - LambdaExecutionRole
           - Arn
       Timeout: "900"
       Environment:
         Variables:
-
           PROCSDBUCKET: !Ref AudioPrcsdBucket
           AthenaNamedQuery: !Ref AthenaNamedQuery
           ASYNC_AUDIO_QUEUE_URL: !Ref TaskAudioQueue
@@ -186,7 +199,7 @@ Resources:
         -
           Arn:
             Fn::GetAtt:
-              - "LambdaFunction2"
+              - "ProcessingTranscribeOutputFunction"
               - "Arn"
           Id: "TargetFunctionV1"
 
@@ -194,7 +207,7 @@ Resources:
     Type: "AWS::Lambda::Permission"
     Properties:
       Action: "lambda:InvokeFunction"
-      FunctionName: !GetAtt LambdaFunction2.Arn
+      FunctionName: !GetAtt ProcessingTranscribeOutputFunction.Arn
       Principal: "events.amazonaws.com"
       SourceArn:
         Fn::GetAtt:
@@ -202,14 +215,11 @@ Resources:
         - "Arn"
 
 
-
-
-
   CustomResourceLambdaFunction:
     Type: 'AWS::Lambda::Function'
     Properties:
       Handler: index.lambda_handler
-      Role: !GetAtt LambdaRole1.Arn
+      Role: !GetAtt LambdaExecutionRole.Arn
       Code:
         ZipFile: |
 
@@ -284,7 +294,7 @@ Resources:
     Type: 'Custom::LambdaTrigger'
     Properties:
       ServiceToken: !GetAtt CustomResourceLambdaFunction.Arn
-      LambdaArn: !GetAtt LambdaFunction1.Arn
+      LambdaArn: !GetAtt SubmittingTranscribeJobFunction.Arn
       Bucket: !Ref AudioRawBucket
 
 
@@ -316,7 +326,5 @@ Outputs:
   OutputBucket:
     Description: translated output Documents.
     Value: !Ref AudioPrcsdBucket 
-  QueryTemplate:
-    Value: SELECT * FROM "default"."transcribe_data" where audio_transcribe_job='###JobId###'
-  ProcessingLambda:
-    Value: !Ref LambdaFunction2
+  ProcessingTranscribeOutputFunction:
+    Value: !Ref ProcessingTranscribeOutputFunction
